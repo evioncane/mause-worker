@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Caffeine for Windows — prevents the computer from sleeping and keeps Teams online.
+Mause Worker — prevents the computer from sleeping and keeps Teams online.
 
 Usage:
   python worker.py                     # Keep system + display awake, Teams online (tray icon)
@@ -63,7 +63,7 @@ def _nudge_mouse() -> None:
     ctypes.windll.user32.SendInput(2, inputs, ctypes.sizeof(_INPUT))
 
 
-class Caffeine:
+class MauseWorker:
     # Teams marks users Away after 5 minutes of no input; nudge every 4 minutes.
     _TEAMS_NUDGE_INTERVAL = 240
 
@@ -126,7 +126,7 @@ class Caffeine:
     def run_headless(self, duration_sec: Optional[int] = None) -> None:
         def _shutdown(sig=None, frame=None):
             self.deactivate()
-            print("\nCaffeine deactivated. Sleep is now allowed.")
+            print("\nMause Worker deactivated. Sleep is now allowed.")
             sys.exit(0)
 
         signal.signal(signal.SIGINT, _shutdown)
@@ -135,7 +135,7 @@ class Caffeine:
         self.activate()
         self._start_heartbeats()
 
-        msg = "Caffeine active. Press Ctrl+C to stop."
+        msg = "Mause Worker active. Press Ctrl+C to stop."
         if duration_sec:
             print(msg + f" Auto-stopping in {duration_sec // 60} minute(s).")
         else:
@@ -202,13 +202,13 @@ class Caffeine:
 
         def _on_quit(icon, _=None) -> None:
             self.deactivate()
-            print("\nCaffeine deactivated. Sleep is now allowed.")
+            print("\nMause Worker deactivated. Sleep is now allowed.")
             icon.stop()
 
         icon = pystray.Icon(
-            name="Caffeine",
+            name="Mause Worker",
             icon=_make_icon(active=True),
-            title="Caffeine — keeping awake",
+            title="Mause Worker — keeping awake",
             menu=_build_menu(),
         )
         state["icon"] = icon
@@ -223,7 +223,7 @@ class Caffeine:
                     _on_quit(icon)
             threading.Thread(target=_auto_stop, daemon=True).start()
 
-        print("Caffeine active. Right-click the system tray icon to control it.")
+        print("Mause Worker active. Right-click the system tray icon to control it.")
         icon.run()
 
 
@@ -233,7 +233,7 @@ class Caffeine:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Caffeine for Windows — prevent your computer from sleeping.",
+        description="Mause Worker — prevent your computer from sleeping and keep Teams online.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -261,12 +261,12 @@ def main() -> None:
     args = parser.parse_args()
 
     duration_sec = args.duration * 60 if args.duration else None
-    app = Caffeine(display=not args.no_display, teams=not args.no_teams)
+    app = MauseWorker(display=not args.no_display, teams=not args.no_teams)
 
     mode = "system only" if args.no_display else "system + display"
     teams_note = "" if args.no_teams else " + Teams online"
     suffix = f" for {args.duration} minute(s)" if args.duration else ""
-    print(f"Caffeine — keeping awake ({mode}{teams_note}){suffix}.")
+    print(f"Mause Worker — keeping awake ({mode}{teams_note}){suffix}.")
 
     if args.no_tray:
         app.run_headless(duration_sec)
