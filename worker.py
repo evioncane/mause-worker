@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Caffeine for Windows — prevents the computer from sleeping.
+Caffeine for Windows — prevents the computer from sleeping and keeps Teams online.
 
 Usage:
-  python caffeine.py                   # Keep system + display awake (tray icon)
-  python caffeine.py --no-display      # Keep system awake, allow display to sleep
-  python caffeine.py --duration 60     # Auto-stop after 60 minutes
-  python caffeine.py --no-tray         # Headless mode, Ctrl+C to stop
+  python worker.py                     # Keep system + display awake, Teams online (tray icon)
+  python worker.py --no-display        # Keep system awake, allow display to sleep
+  python worker.py --no-teams          # Skip Teams mouse-nudge (sleep prevention only)
+  python worker.py --duration 60       # Auto-stop after 60 minutes
+  python worker.py --no-tray           # Headless mode, Ctrl+C to stop
 """
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import signal
 import sys
 import threading
@@ -22,10 +24,52 @@ ES_CONTINUOUS       = 0x80000000
 ES_SYSTEM_REQUIRED  = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
 
+# SendInput structures for mouse movement
+INPUT_MOUSE         = 0
+MOUSEEVENTF_MOVE    = 0x0001  # relative movement
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx",          ctypes.c_long),
+        ("dy",          ctypes.c_long),
+        ("mouseData",   ctypes.wintypes.DWORD),
+        ("dwFlags",     ctypes.wintypes.DWORD),
+        ("time",        ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", _MOUSEINPUT)]
+
+
+class _INPUT(ctypes.Structure):
+    _anonymous_ = ("_u",)
+    _fields_ = [
+        ("type", ctypes.wintypes.DWORD),
+        ("_u",   _INPUT_UNION),
+    ]
+
+
+def _nudge_mouse() -> None:
+    """Send a +1 / -1 relative mouse move — resets Teams' GetLastInputInfo timer."""
+    inputs = (_INPUT * 2)()
+    for i, dx in enumerate((1, -1)):
+        inputs[i].type   = INPUT_MOUSE
+        inputs[i].mi.dx  = dx
+        inputs[i].mi.dy  = 0
+        inputs[i].mi.dwFlags = MOUSEEVENTF_MOVE
+    ctypes.windll.user32.SendInput(2, inputs, ctypes.sizeof(_INPUT))
+
 
 class Caffeine:
-    def __init__(self, display: bool = True):
+    # Teams marks users Away after 5 minutes of no input; nudge every 4 minutes.
+    _TEAMS_NUDGE_INTERVAL = 240
+
+    def __init__(self, display: bool = True, teams: bool = True):
         self.display = display
+        self.teams = teams
         self._active = False
         self._lock = threading.Lock()
 
@@ -54,14 +98,26 @@ class Caffeine:
             return self._active
 
     # ------------------------------------------------------------------
-    # Heartbeat — re-asserts the state every minute as a safety net
+    # Heartbeats
     # ------------------------------------------------------------------
 
     def _heartbeat(self, interval: int = 58) -> None:
+        """Re-asserts SetThreadExecutionState every minute."""
         while self.is_active():
             time.sleep(interval)
             if self.is_active():
                 self._apply_state()
+
+    def _teams_heartbeat(self) -> None:
+        """Nudges the mouse every 4 minutes to keep Teams from going Away."""
+        while self.is_active():
+            time.sleep(self._TEAMS_NUDGE_INTERVAL)
+            if self.is_active() and self.teams:
+                _nudge_mouse()
+
+    def _start_heartbeats(self) -> None:
+        threading.Thread(target=self._heartbeat, daemon=True).start()
+        threading.Thread(target=self._teams_heartbeat, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Headless mode
@@ -77,7 +133,7 @@ class Caffeine:
         signal.signal(signal.SIGTERM, _shutdown)
 
         self.activate()
-        threading.Thread(target=self._heartbeat, daemon=True).start()
+        self._start_heartbeats()
 
         msg = "Caffeine active. Press Ctrl+C to stop."
         if duration_sec:
@@ -122,12 +178,16 @@ class Caffeine:
         state = {"icon": None}
 
         def _build_menu() -> pystray.Menu:
-            display_label = "Keep display on"
             return pystray.Menu(
                 pystray.MenuItem(
-                    display_label,
+                    "Keep display on",
                     _on_toggle_display,
                     checked=lambda _: self.display,
+                ),
+                pystray.MenuItem(
+                    "Keep Teams online",
+                    _on_toggle_teams,
+                    checked=lambda _: self.teams,
                 ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", _on_quit),
@@ -136,7 +196,9 @@ class Caffeine:
         def _on_toggle_display(icon, item) -> None:
             self.display = not self.display
             self._apply_state()
-            icon.icon = _make_icon(active=True)
+
+        def _on_toggle_teams(icon, item) -> None:
+            self.teams = not self.teams
 
         def _on_quit(icon, _=None) -> None:
             self.deactivate()
@@ -152,7 +214,7 @@ class Caffeine:
         state["icon"] = icon
 
         self.activate()
-        threading.Thread(target=self._heartbeat, daemon=True).start()
+        self._start_heartbeats()
 
         if duration_sec:
             def _auto_stop() -> None:
@@ -187,6 +249,11 @@ def main() -> None:
         help="Automatically deactivate after MINUTES minutes.",
     )
     parser.add_argument(
+        "--no-teams",
+        action="store_true",
+        help="Disable the Teams presence nudge (mouse-move trick).",
+    )
+    parser.add_argument(
         "--no-tray",
         action="store_true",
         help="Run without a system tray icon (headless mode).",
@@ -194,11 +261,12 @@ def main() -> None:
     args = parser.parse_args()
 
     duration_sec = args.duration * 60 if args.duration else None
-    app = Caffeine(display=not args.no_display)
+    app = Caffeine(display=not args.no_display, teams=not args.no_teams)
 
     mode = "system only" if args.no_display else "system + display"
+    teams_note = "" if args.no_teams else " + Teams online"
     suffix = f" for {args.duration} minute(s)" if args.duration else ""
-    print(f"Caffeine — keeping awake ({mode}){suffix}.")
+    print(f"Caffeine — keeping awake ({mode}{teams_note}){suffix}.")
 
     if args.no_tray:
         app.run_headless(duration_sec)
