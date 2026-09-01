@@ -412,6 +412,7 @@ class MauseWorker:
         self.nudge_interval = nudge_interval or self._TEAMS_NUDGE_INTERVAL
         self._active = False
         self._lock = threading.Lock()
+        self._heartbeats_running = False
 
     # ------------------------------------------------------------------
     # Core state
@@ -439,20 +440,24 @@ class MauseWorker:
     # ------------------------------------------------------------------
 
     def _heartbeat(self, interval: int = 58) -> None:
-        """Re-asserts the wake lock every minute."""
-        while self.is_active():
+        """Re-asserts the wake lock every minute, skipping ticks while paused."""
+        while True:
             time.sleep(interval)
             if self.is_active():
                 self._apply_state()
 
     def _teams_heartbeat(self) -> None:
         """Nudges the mouse every 4 minutes to keep Teams from going Away."""
-        while self.is_active():
+        while True:
             time.sleep(self.nudge_interval)
             if self.is_active() and self.teams:
                 self.backend.nudge()
 
     def _start_heartbeats(self) -> None:
+        """Start the daemon heartbeats once; they idle through any pause."""
+        if self._heartbeats_running:
+            return
+        self._heartbeats_running = True
         threading.Thread(target=self._heartbeat, daemon=True).start()
         threading.Thread(target=self._teams_heartbeat, daemon=True).start()
 
@@ -514,6 +519,12 @@ class MauseWorker:
         def _build_menu() -> "pystray.Menu":
             return pystray.Menu(
                 pystray.MenuItem(
+                    lambda _: "Awake: ON" if self.is_active() else "Awake: OFF",
+                    _on_toggle_awake,
+                    default=True,
+                ),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
                     "Keep display on",
                     _on_toggle_display,
                     checked=lambda _: self.display,
@@ -524,7 +535,20 @@ class MauseWorker:
                     checked=lambda _: self.teams,
                 ),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Quit", _on_quit),
+                pystray.MenuItem("Quit Mause Worker", _on_quit),
+            )
+
+        def _on_toggle_awake(icon, item) -> None:
+            """Pause or resume without leaving — the icon dims while paused."""
+            if self.is_active():
+                self.deactivate()
+            else:
+                self.activate()
+                self._start_heartbeats()
+            icon.icon = _make_icon(active=self.is_active())
+            icon.title = (
+                "Mause Worker - keeping awake" if self.is_active()
+                else "Mause Worker - paused"
             )
 
         def _on_toggle_display(icon, item) -> None:
@@ -536,13 +560,13 @@ class MauseWorker:
 
         def _on_quit(icon, _=None) -> None:
             self.deactivate()
-            print("\nMause Worker deactivated. Sleep is now allowed.")
+            print("\nMause Worker deactivated. Sleep is now allowed.", flush=True)
             icon.stop()
 
         icon = pystray.Icon(
             name="Mause Worker",
             icon=_make_icon(active=True),
-            title="Mause Worker — keeping awake",
+            title="Mause Worker - keeping awake",
             menu=_build_menu(),
         )
 
@@ -557,8 +581,12 @@ class MauseWorker:
             threading.Thread(target=_auto_stop, daemon=True).start()
 
         where = "menu bar" if self.backend.name == "macOS" else "system tray"
-        print(f"Mause Worker active. Use the {where} icon to control it.")
+        print(f"Mause Worker active. Use the {where} icon to control it "
+              f"(Quit Mause Worker closes it).", flush=True)
         icon.run()
+        # run() returns once Quit stops the loop; release again in case the icon
+        # was still active, then let the daemon heartbeats die with the process.
+        self.deactivate()
 
 
 # ----------------------------------------------------------------------
@@ -605,7 +633,8 @@ def main() -> None:
         help="Report whether sleep prevention and the Teams nudge can actually work, then exit.",
     )
     parser.add_argument(
-        "--no-tray",
+        "--no-tray", "--headless",
+        dest="no_tray",
         action="store_true",
         help="Run without a tray / menu bar icon (headless mode).",
     )

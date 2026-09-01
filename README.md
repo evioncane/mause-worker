@@ -30,7 +30,7 @@ pip install -r requirements.txt
 1. Run the check:
 
    ```bash
-   ./mause.sh check          # or: python worker.py --check
+   mause check               # or: python worker.py --check
    ```
 
    A macOS permission dialog appears the first time.
@@ -50,7 +50,7 @@ If you launch from a different terminal later, grant it there too. Use `--no-tea
 Teams also reports Away once the screen locks, which `caffeinate` does not prevent. The nudge normally stops the screen saver from ever starting, but if your lock delay is shorter than the nudge interval, lower the interval:
 
 ```bash
-./mause.sh start --interval 120
+mause --interval 120
 ```
 
 ## Usage
@@ -83,25 +83,52 @@ python worker.py --check
 python worker.py --interval 120
 ```
 
-## Running in the background
+## Installing the `mause` command
 
-`mause.sh` runs Mause Worker as a detached background process, so it survives closing the terminal.
+Put `mause` on your PATH so you can start it from any directory:
 
 ```bash
-./mause.sh start        # start in the background
-./mause.sh stop         # stop it
-./mause.sh status       # running? for how long? what is it holding?
-./mause.sh check        # verify the Teams nudge is actually delivered
-./mause.sh restart      # stop, then start
-./mause.sh log          # follow the log (Ctrl+C stops following, not the worker)
+./install.sh
 ```
+
+This symlinks `mause.sh` into `~/.local/bin/mause`, adding that directory to your
+PATH in `~/.zshrc` if it is not there already (it backs the file up first, and
+inserts above any pinned trailing block such as SDKMAN's). Open a new terminal
+afterwards. To choose a different directory, or to undo it:
+
+```bash
+MAUSE_BIN_DIR=/opt/homebrew/bin ./install.sh
+./install.sh --uninstall            # remove the symlink
+```
+
+The symlink points back at this checkout rather than copying it, so `git pull`
+updates the command — and moving the project directory breaks the link.
+
+## Running in the background
+
+Mause Worker runs as a detached background process, so it survives closing the
+terminal. Typing `mause` on its own starts it:
+
+```bash
+mause             # start in the background (with the menu bar icon)
+mause stop        # stop it
+mause status      # running? for how long? what is it holding?
+mause check       # verify the Teams nudge is actually delivered
+mause restart     # stop, then start
+mause log         # follow the log (Ctrl+C stops following, not the worker)
+mause help        # the same list
+```
+
+Without installing, `./mause.sh` from the project directory takes exactly the
+same commands — `./mause.sh`, `./mause.sh stop`, and so on. The explicit
+`mause start` spelling still works too.
 
 Any worker option is forwarded to `worker.py`:
 
 ```bash
-./mause.sh start --no-display --duration 120
-./mause.sh start --no-teams
-./mause.sh start --tray          # keep the menu bar icon (headless otherwise)
+mause --no-display --duration 120
+mause --no-teams
+mause --headless      # no menu bar icon (the icon is shown by default)
 ```
 
 The PID and log live in `.run/` next to the script (gitignored). Starting twice is a no-op — it reports the running PID instead of launching a second copy. Use `restart` to change options.
@@ -109,13 +136,13 @@ The PID and log live in `.run/` next to the script (gitignored). Starting twice 
 ### Stopping it
 
 ```bash
-./mause.sh stop
+mause stop
 ```
 
 This sends `SIGTERM`, which lets the worker drop its wake lock cleanly, then waits up to 10 seconds before escalating to `SIGKILL`. Confirm with:
 
 ```bash
-./mause.sh status                      # -> "not running"
+mause status                           # -> "not running"
 pmset -g assertions | grep caffeinate  # -> no entry for the worker
 ```
 
@@ -125,25 +152,29 @@ pmset -g assertions | grep caffeinate  # -> no entry for the worker
 pkill -f "worker.py"      # stop every Mause Worker instance
 ```
 
-**If you started it in the foreground**, just press `Ctrl+C`, or quit from the menu bar icon.
+You can also quit from the menu bar icon itself: click the coffee cup and choose
+**Quit Mause Worker**. That drops the wake lock and exits the process, exactly as
+`mause stop` does. **If you started it in the foreground**, `Ctrl+C` works too.
 
 You never need to kill `caffeinate` yourself. It is started with `-w <worker pid>`, so it exits with the worker even if the worker is `SIGKILL`ed — no power assertion is ever left behind.
 
 ## Tray / menu bar icon
 
-Right-click the icon on Windows, or click it on macOS, to toggle options or quit:
+The icon is on by default, both in the foreground and via `mause`.
+Right-click it on Windows, or click it on macOS, to toggle options or quit:
 
-| Option | Default |
+| Item | Does |
 |---|---|
-| Keep display on | ✅ on |
-| Keep Teams online | ✅ on |
-| Quit | — |
+| Awake: ON / OFF | Pauses or resumes without quitting; the cup greys out while paused |
+| Keep display on | Toggles display sleep prevention (on by default) |
+| Keep Teams online | Toggles the mouse nudge (on by default) |
+| Quit Mause Worker | Drops the wake lock and closes the program |
 
 ## Troubleshooting
 
-**Teams still goes Away.** Run `./mause.sh check`. If it reports `DROPPED by macOS`, the Accessibility permission is missing — see above. This is by far the most common cause.
+**Teams still goes Away.** Run `mause check`. If it reports `DROPPED by macOS`, the Accessibility permission is missing — see above. This is by far the most common cause.
 
-**It works in the foreground but not in the background.** The background process inherits the Accessibility grant of the terminal that started it. Grant permission to that terminal, then `./mause.sh restart`.
+**It works in the foreground but not in the background.** The background process inherits the Accessibility grant of the terminal that started it. Grant permission to that terminal, then `mause restart`.
 
 ## Notes
 

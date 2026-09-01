@@ -2,19 +2,45 @@
 #
 # Mause Worker background control script.
 #
-#   ./mause.sh start [worker options]   Start in the background
-#   ./mause.sh stop                     Stop it (clean shutdown)
-#   ./mause.sh status                   Is it running, and what is it holding?
-#   ./mause.sh check                    Can the Teams nudge actually work here?
-#   ./mause.sh restart [worker options] Stop then start
-#   ./mause.sh log                      Follow the log (Ctrl+C to stop following)
+#   mause [worker options]             Start in the background (the default)
+#   mause stop                         Stop it (clean shutdown)
+#   mause status                       Is it running, and what is it holding?
+#   mause check                        Can the Teams nudge actually work here?
+#   mause restart [worker options]     Stop then start
+#   mause log                          Follow the log (Ctrl+C to stop following)
+#   mause help                         This text
 #
-# Any worker option is forwarded: ./mause.sh start --no-display --duration 120
-# Pass --tray to keep the menu bar icon; the default is headless.
+# Any worker option is forwarded: mause --no-display --duration 120
+# The menu bar icon is shown by default; pass --headless to run without it.
+#
+# Works the same as ./mause.sh from the project directory, or as `mause` when
+# installed on PATH:  ./install.sh
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# Resolve where this script really lives, following any symlink chain, so the
+# command can sit on PATH as `mause` while .venv and worker.py stay beside the
+# original file. Without this, a symlinked launcher would look for the
+# virtualenv next to the symlink.
+resolve_script_path() {
+    local source="${BASH_SOURCE[0]}"
+    local containing_dir
+    while [[ -L "$source" ]]; do
+        containing_dir="$(cd -- "$(dirname -- "$source")" && pwd -P)"
+        source="$(readlink -- "$source")"
+        [[ "$source" != /* ]] && source="$containing_dir/$source"
+    done
+    containing_dir="$(cd -- "$(dirname -- "$source")" && pwd -P)"
+    printf '%s\n' "$containing_dir/$(basename -- "$source")"
+}
+
+SCRIPT_PATH="$(resolve_script_path)"
+SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+
+# How this was invoked, so the hints we print back are copy-pasteable: `mause`
+# when run from PATH, `./mause.sh` when run from the project directory.
+INVOKED_AS="$(basename -- "$0")"
+[[ "$INVOKED_AS" == *.sh ]] && INVOKED_AS="./$INVOKED_AS"
 RUN_DIR="$SCRIPT_DIR/.run"
 PID_FILE="$RUN_DIR/worker.pid"
 LOG_FILE="$RUN_DIR/worker.log"
@@ -24,8 +50,10 @@ SHUTDOWN_GRACE_SECONDS=10
 
 
 usage() {
-    # Print the header comment block, stopping at the first line of real code.
-    awk 'NR > 2 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "${BASH_SOURCE[0]}"
+    # Print the header comment block, stopping at the first line of real code,
+    # with the examples rewritten to match how this was invoked.
+    awk 'NR > 2 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "$SCRIPT_PATH" \
+        | sed -e "s|^  mause |  $INVOKED_AS |" -e "s|: mause |: $INVOKED_AS |"
 }
 
 
@@ -49,7 +77,7 @@ worker_pid() {
 start() {
     local existing_pid
     if existing_pid="$(worker_pid)"; then
-        echo "Mause Worker is already running (pid $existing_pid). Use './mause.sh restart' to reload options."
+        echo "Mause Worker is already running (pid $existing_pid). Use '$INVOKED_AS restart' to reload options."
         return 0
     fi
 
@@ -59,17 +87,18 @@ start() {
         return 1
     fi
 
-    # Headless by default — a backgrounded process is driven by this script,
-    # not by a menu bar icon. --tray opts back in.
+    # The menu bar icon is the point of running this in the background — it is
+    # how you see that it is on and how you quit it. --headless (or the worker's
+    # own --no-tray) opts out.
     local forwarded=()
-    local want_tray=0
+    local want_tray=1
     local argument
     for argument in "$@"; do
-        if [[ "$argument" == "--tray" ]]; then
-            want_tray=1
-        else
-            forwarded+=("$argument")
-        fi
+        case "$argument" in
+            --tray)                want_tray=1 ;;
+            --headless|--no-tray)  want_tray=0 ;;
+            *)                     forwarded+=("$argument") ;;
+        esac
     done
     if [[ $want_tray -eq 0 ]]; then
         forwarded+=("--no-tray")
@@ -97,8 +126,11 @@ start() {
     fi
 
     echo "Mause Worker started (pid $new_pid)."
-    echo "  stop:  ./mause.sh stop"
-    echo "  log:   ./mause.sh log"
+    if [[ $want_tray -eq 1 ]]; then
+        echo "  quit:  click the coffee cup in the menu bar -> Quit Mause Worker"
+    fi
+    echo "  stop:  $INVOKED_AS stop"
+    echo "  log:   $INVOKED_AS log"
 }
 
 
@@ -175,15 +207,21 @@ check() {
 
 follow_log() {
     if [[ ! -f "$LOG_FILE" ]]; then
-        echo "No log yet at $LOG_FILE — start Mause Worker first."
+        echo "No log yet at $LOG_FILE — run '$INVOKED_AS' first."
         return 1
     fi
     tail -n 20 -f "$LOG_FILE"
 }
 
 
-command_name="${1:-}"
-[[ $# -gt 0 ]] && shift
+# Starting is the common case, so a bare `mause` starts it. A leading option
+# means the same thing with options: `mause --duration 60`.
+command_name="${1:-start}"
+case "$command_name" in
+    -h|--help|help) usage; exit 0 ;;
+    -*)             command_name="start" ;;
+    *)              [[ $# -gt 0 ]] && shift ;;
+esac
 
 case "$command_name" in
     start)   start "$@" ;;
@@ -192,7 +230,6 @@ case "$command_name" in
     status)  status ;;
     check)   check ;;
     log)     follow_log ;;
-    ""|-h|--help|help) usage ;;
     *)
         echo "Unknown command: $command_name" >&2
         echo >&2
